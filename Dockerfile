@@ -1,12 +1,9 @@
-FROM zekunli/zekun-keras-gpu
+FROM tensorflow/tensorflow:2.15.0-gpu
 
-WORKDIR = /map-kurator
-
-# Install GDAL for Rasterio
-RUN add-apt-repository -y ppa:ubuntugis/ppa \
- && apt-get update -y \
- && apt-get install -y python-numpy gdal-bin libgdal-dev
+RUN mkdir /home/map-kurator
 
 COPY requirements.txt requirements.txt
 
-RUN pip3 install -r requirements.txt
+RUN pip install -r requirements.txt
+
+WORKDIR /home/map-kurator

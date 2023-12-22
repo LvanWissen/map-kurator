@@ -2,3 +2,5 @@ xmltodict
 requests
 shapely
 rasterio
+opencv-python-headless
+lxml

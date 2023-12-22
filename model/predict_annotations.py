@@ -1,6 +1,7 @@
 import argparse
 import os
 import uuid
+from pathlib import Path
 
 from wmts_handler import WMTSHandler
 from image_handler import ImageHandler
@@ -10,12 +11,14 @@ from mymodel import model_U_VGG_Centerline_Localheight
 import cv2
 import numpy as np
 import json
+from lxml import etree
 from shapely.geometry import Polygon
 
-os.environ['KERAS_BACKEND'] = 'tensorflow'
-os.environ['CUDA_VISIBLE_DEVICES'] = ""
+import requests
 
-import sys
+os.environ['KERAS_BACKEND'] = 'tensorflow'
+os.environ['CUDA_VISIBLE_DEVICES'] = "0"
+
 import tensorflow as tf
 
 import time
@@ -98,7 +101,7 @@ def run_model(map_id, map_path, output_dir):
     for cur_cc_idx in range(1, num_c):  # index_0 is the background
 
         if cur_cc_idx % 100 == 0:
-            print('processed', str(cur_cc_idx))
+            print('processed', str(cur_cc_idx), "/", str(num_c))
 
         centerline_indices = np.where(connected_map == cur_cc_idx)
 
@@ -159,16 +162,17 @@ def run_model(map_id, map_path, output_dir):
         poly_points = np.array([poly_list[i]], dtype=np.int32)
         cv2.polylines(map_img, poly_points, True, (0, 0, 255), 3)
 
-    predictions_file = os.path.join(output_dir, map_id + '_predictions.jpg')
+    os.makedirs(os.path.join(output_dir, 'predictions'), exist_ok=True)
+    predictions_file = os.path.join(output_dir, "predictions", map_id + '.jpg')
     cv2.imwrite(predictions_file, map_img)
-
 
     return poly_list
 
-def write_annotation(map_id, output_dir, poly_list, handler = None):
+def write_annotation(map_id, output_dir, poly_list, canvas_id="", image_service_id="", handler = None):
 
+    os.makedirs(os.path.join(output_dir, 'annotations'), exist_ok=True)
 
-    if handler is not None: 
+    if handler: 
         # perform this operation for WMTS tiles only
         # based on the tile info, convert from image coordinate system to EPSG：4326
         # assumes that the tilesize = 256x256
@@ -216,31 +220,145 @@ def write_annotation(map_id, output_dir, poly_list, handler = None):
     # Generate web annotations: https://www.w3.org/TR/annotation-model/
     annotations = []
     for polygon in poly_list:
-        svg_polygon_coords = ' '.join([f"{x},{y}" for x, y in polygon])
+
+        # svg_polygon_coords = ' '.join([f"{int(x)},{int(y)}" for x, y in polygon])
+        if not polygon:
+            continue
+        annotation_id = str(uuid.uuid4())
+
+        svg = getSVG(polygon)
+
+        if canvas_id:
+            target = {
+                "source": canvas_id,
+                "selector": {
+                    "type": "SvgSelector",
+                    "value": svg
+                }
+            }
+        elif image_service_id:
+            target = {
+                "type": "Image",
+                "source": image_service_id + "/full/full/0/default.jpg",
+                "service": [
+                    {
+                        "@id": image_service_id,
+                        "type": "ImageService2",
+                    }
+                ],
+                "selector": {
+                    "type": "SvgSelector",
+                    "value": svg
+                }
+            }
+
         annotation = {
             "@context": "http://www.w3.org/ns/anno.jsonld",
-            "id": "",
-            #"body": [{
-            #    "type": "TextualBody",
-            #    "purpose": "tagging",
-            #    "value": "null"
-            #}],
-            "target": {
-                "selector": [{
-                    "type": "SvgSelector",
-                    "value": f"<svg><polygon points='{svg_polygon_coords}'></polygon></svg>"
-                }]
-            }
+            "id": annotation_id,
+            "type": "Annotation",
+            "generator": {
+                "id": "https://github.com/machines-reading-maps/map-kurator",
+                "type": "Software",
+            },
+            "motivation": "tagging",
+            "body": [{
+               "type": "TextualBody",
+               "value": "Map label"
+            }],
+            "target": target
         }
         annotations.append(annotation)
 
-    annotation_file = os.path.join(output_dir, map_id + '_annotations.json')
+    annotation_page_id = canvas_id.split(".json")[0] + 'annotationpage_mapkurator.json'  #TODO
+    annotation_page = {
+        "@context": "http://iiif.io/api/presentation/3/context.json",
+        "id": annotation_page_id,
+        "type": "AnnotationPage",
+        "items": annotations
+    }
+
+    annotation_file = os.path.join(output_dir, 'annotations', map_id + '.json')
     with open(annotation_file, 'w') as f:
-        f.write(json.dumps(annotations, indent=2))
+        f.write(json.dumps(annotation_page, indent=2))
 
     return annotation_file
     # print(f"{polyList}")
 
+def parse_iiif_prezi(iiif_prezi_id, output_dir):
+
+    r = requests.get(iiif_prezi_id)
+    iiif_prezi = r.json()
+
+    if iiif_prezi.get("type") == "Collection":
+        for i in iiif_prezi["items"]:
+            if i["type"] == "Collection":
+                parse_iiif_prezi(i["id"], output_dir)
+            elif i["type"] == "Manifest":
+                parse_manifest(i["id"], output_dir)
+    elif iiif_prezi.get("type") == "Manifest":
+        parse_manifest(iiif_prezi["id"], output_dir)
+    else:
+        image_service_id = iiif_prezi["@id"]
+        parse_image(output_dir, image_service_id=image_service_id)
+
+def parse_manifest(manifest_id, output_dir):
+
+    r = requests.get(manifest_id)
+    manifest = r.json()
+
+    for i in manifest["items"]:
+        if i["type"] == "Canvas":
+            canvas_id = i["id"]
+            image_service_id = i["items"][0]["items"][0]["body"]["service"][0]["@id"]
+            
+            parse_image(output_dir, canvas_id=canvas_id, image_service_id=image_service_id)
+
+def parse_image(output_dir, canvas_id="", image_service_id=""):
+    image_uuid = Path(image_service_id).stem
+    image_url = "https://service.archief.nl/gaf/api/file/v1/original/" + image_uuid
+
+    os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
+    image_path = os.path.join(output_dir, "images", image_uuid + ".jpg")
+
+    # Download image
+    if not os.path.isfile(image_path):
+        print("Downloading image", image_url, "to", image_path, "...")
+        r = requests.get(image_url, stream=True)
+        with open(image_path, 'wb') as f:
+            f.write(r.content) 
+    
+    poly_list = run_model(image_uuid, image_path, output_dir)
+    annotation_file = write_annotation(image_uuid, output_dir, poly_list, canvas_id=canvas_id, image_service_id=image_service_id)
+    
+    print("Wrote annotation to", annotation_file)
+
+    return annotation_file
+
+def getSVG(
+    coordinates, color="#FF0055", opacity="0.1", stroke_width="1", stroke_color="#FF0055"
+):
+
+    points = "M "  # start at this point
+    points += " L ".join(
+        [f"{int(x)},{int(y)}" for x, y in coordinates]
+    )  # then move from point to point
+    points += " Z"  # close
+
+    svg = etree.Element("svg", xmlns="http://www.w3.org/2000/svg")
+    _ = etree.SubElement(
+        svg,
+        "path",
+        **{
+            "fill-rule": "evenodd",
+            "fill": color,
+            "stroke": stroke_color,
+            "stroke-width": stroke_width,
+            "fill-opacity": opacity,
+            "d": points,
+        },
+    )
+
+    return etree.tostring(svg, encoding=str)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -298,26 +416,30 @@ time docker run -it -v $(pwd)/data/:/map-kurator/data -v $(pwd)/model:/map-kurat
         else:
             annotation_file = write_annotation(img_id, output_dir, poly_list, handler = wmts_handler)
 
-    if args.subcommand == 'iiif':
+    elif args.subcommand == 'iiif':
         '''
 time docker run -it -v $(pwd)/data/:/map-kurator/data -v $(pwd)/model:/map-kurator/model --rm --runtime=nvidia --gpus all  --workdir=/map-kurator map-kurator python model/predict_annotations.py iiif --url='https://map-view.nls.uk/iiif/2/12563%2F125635459/info.json' --dst=data/test_imgs/sample_output/
+        
+        docker run -it -v $(pwd)/data/:/map-kurator/data -v $(pwd)/model:/map-kurator/model --rm --runtime=nvidia --gpus all  --workdir=/map-kurator map-kurator python model/predict_annotations.py iiif --url='https://data.globalise.huygens.knaw.nl/manifests/maps/4.VEL/B/B.1/B.1.1.json' --dst=data/output/
+
+        
+        
         '''
-        start_download = time.time()
-        iiif_handler = IIIFHandler(args.url, output_dir, img_filename=img_id + '_stitched.jpg')
-        map_path = iiif_handler.process_url()
+        start = time.time()
+        # iiif_handler = IIIFHandler(args.url, output_dir, img_filename=img_id + '_stitched.jpg')
+        # map_path = iiif_handler.process_url()
 
-        end_download = time.time()
+        # poly_list = run_model(img_id, map_path, output_dir)
+        # annotation_file = write_annotation(img_id, output_dir, poly_list)
 
-        poly_list = run_model(img_id, map_path, output_dir)
-        annotation_file = write_annotation(img_id, output_dir, poly_list)
+        parse_iiif_prezi(args.url, output_dir)
 
-        end_detection = time.time()
+        end = time.time()
 
-        print('download time: ', end_download - start_download)
-        print('detection time: ', end_detection - end_download)
+        print('processing time: ', start - end)
 
 
-    if args.subcommand == 'file':
+    elif args.subcommand == 'file':
         '''
 time docker run -it -v $(pwd)/data/:/map-kurator/data -v $(pwd)/model:/map-kurator/model --rm --runtime=nvidia --gpus all  --workdir=/map-kurator map-kurator python model/predict_annotations.py file --src=data/test_imgs/sample_input/101201496_h10w3.jpg --dst=data/test_imgs/sample_output/
         '''
@@ -327,7 +449,3 @@ time docker run -it -v $(pwd)/data/:/map-kurator/data -v $(pwd)/model:/map-kurat
         annotation_file = write_annotation(img_id, output_dir, poly_list)
 
 
-    
-
-    print("done")
-    print(annotation_file)
