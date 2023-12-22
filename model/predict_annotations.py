@@ -269,7 +269,7 @@ def write_annotation(map_id, output_dir, poly_list, canvas_id="", image_service_
         }
         annotations.append(annotation)
 
-    annotation_page_id = canvas_id.split(".json")[0] + 'annotationpage_mapkurator.json'  #TODO
+    annotation_page_id = canvas_id.split(".json")[0] + '_annotationpage_mapkurator.json'  #TODO
     annotation_page = {
         "@context": "http://iiif.io/api/presentation/3/context.json",
         "id": annotation_page_id,
