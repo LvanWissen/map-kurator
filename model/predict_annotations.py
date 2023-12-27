@@ -307,11 +307,15 @@ def parse_manifest(manifest_id, output_dir):
     manifest = r.json()
 
     for i in manifest["items"]:
-        if i["type"] == "Canvas":
-            canvas_id = i["id"]
-            image_service_id = i["items"][0]["items"][0]["body"]["service"][0]["@id"]
-            
-            parse_image(output_dir, canvas_id=canvas_id, image_service_id=image_service_id)
+        try: 
+            if i["type"] == "Canvas":
+                canvas_id = i["id"]
+                image_service_id = i["items"][0]["items"][0]["body"]["service"][0]["@id"]
+                
+                parse_image(output_dir, canvas_id=canvas_id, image_service_id=image_service_id)
+        except:
+            print("Error parsing manifest", manifest_id, "item", i)
+            continue
 
 def parse_image(output_dir, canvas_id="", image_service_id=""):
     image_uuid = Path(image_service_id).stem
