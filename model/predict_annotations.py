@@ -269,7 +269,14 @@ def write_annotation(map_id, output_dir, poly_list, canvas_id="", image_service_
         }
         annotations.append(annotation)
 
-    annotation_page_id = canvas_id.split(".json")[0] + '_annotationpage_mapkurator.json'  #TODO
+    if canvas_id:
+        canvas_p_id = canvas_id.split("/canvas/")[1]  # e.g. p1, p2, p3
+        annotation_page_id = canvas_id.split(".json")[0] + '_' + canvas_p_id + '_annotationpage_mapkurator.json'
+        annotation_file = os.path.join(output_dir, 'annotations', map_id + '_' + canvas_p_id + '.json')
+    elif image_service_id:
+        annotation_page_id = map_id + '_annotationpage_mapkurator.json'
+        annotation_file = os.path.join(output_dir, 'annotations', map_id + '.json')
+    
     annotation_page = {
         "@context": "http://iiif.io/api/presentation/3/context.json",
         "id": annotation_page_id,
@@ -277,7 +284,6 @@ def write_annotation(map_id, output_dir, poly_list, canvas_id="", image_service_
         "items": annotations
     }
 
-    annotation_file = os.path.join(output_dir, 'annotations', map_id + '.json')
     with open(annotation_file, 'w') as f:
         f.write(json.dumps(annotation_page, indent=2))
 
@@ -329,7 +335,7 @@ def parse_image(output_dir, canvas_id="", image_service_id=""):
         print("Downloading image", image_url, "to", image_path, "...")
         r = requests.get(image_url, stream=True)
         with open(image_path, 'wb') as f:
-            f.write(r.content) 
+            f.write(r.content)
     
     poly_list = run_model(image_uuid, image_path, output_dir)
     annotation_file = write_annotation(image_uuid, output_dir, poly_list, canvas_id=canvas_id, image_service_id=image_service_id)
